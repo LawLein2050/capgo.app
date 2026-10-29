@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildReadDevicesCFQuery as buildPluginReadDevicesCFQuery } from '../supabase/functions/_backend/plugin_runtime/utils/cloudflare.ts'
-import { buildDeviceIdsByInstallSourcesQuery, buildReadDevicesCFQuery, countDevicesCF, countInstallSourcesCF, formatDateCF, readBandwidthUsageCF, readDeviceUsageCF } from '../supabase/functions/_backend/utils/cloudflare.ts'
+import { buildReadDevicesCFQuery as buildPluginReadDevicesCFQuery, readDevicesCF as readPluginDevicesCF } from '../supabase/functions/_backend/plugin_runtime/utils/cloudflare.ts'
+import { buildDeviceIdsByInstallSourcesQuery, buildReadDevicesCFQuery, countDevicesCF, countInstallSourcesCF, formatDateCF, readBandwidthUsageCF, readDevicesCF, readDeviceUsageCF } from '../supabase/functions/_backend/utils/cloudflare.ts'
 import { readDevicesSB } from '../supabase/functions/_backend/utils/supabase.ts'
 
 const pgMocks = vi.hoisted(() => ({
@@ -34,6 +34,16 @@ beforeEach(() => {
 })
 
 describe('buildReadDevicesCFQuery', () => {
+  it.concurrent.each([['backend', buildReadDevicesCFQuery], ['plugin', buildPluginReadDevicesCFQuery]] as const)('%s reads the latest install source only for targeted devices', (_name, buildQuery) => {
+    const params = { app_id: 'com.example.app', limit: 1 }
+    expect(buildQuery(params, false)).not.toContain('blob9')
+    const query = buildQuery({ ...params, deviceIds: ['00000000-0000-4000-8000-000000000001'] }, false)
+    // Do not prefer an older non-empty source after collection has been disabled.
+    expect(query).toContain('argMax(blob9, timestamp) AS install_source')
+    expect(query).not.toContain('if(blob9')
+    expect(query).not.toContain("blob9 != ''")
+  })
+
   it.concurrent('applies default device_id cursor pagination when no order is provided', () => {
     const query = buildReadDevicesCFQuery({
       app_id: 'com.example.app',
@@ -224,6 +234,36 @@ describe('buildReadDevicesCFQuery', () => {
     expect(searchIndex).toBeGreaterThan(groupByIndex)
     expect(query.indexOf('platform = 0')).toBeGreaterThan(groupByIndex)
   })
+})
+
+describe('readDevicesCF install source', () => {
+  for (const [name, readDevices] of [['backend', readDevicesCF], ['plugin', readPluginDevicesCF]] as const) {
+    it.each([{ label: 'google_play', source: 'google_play' }, { label: 'empty', source: '' }, { label: 'absent', source: undefined }])(`${name} maps the latest $label source without restoring absent collection`, async ({ source: installSource }) => {
+      let query = ''
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+        query = String(init?.body ?? '')
+        return new Response(JSON.stringify({
+          meta: installSource === undefined ? [] : [{ name: 'install_source', type: 'String' }],
+          data: [{
+            device_id: '00000000-0000-4000-8000-000000000001',
+            install_source: installSource,
+            platform: 0,
+            is_prod: 1,
+            is_emulator: 0,
+            updated_at: '2026-04-04 03:05:59',
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }))
+      const devices = await readDevices(createContextMock() as unknown as Context, {
+        app_id: 'com.example.app',
+        deviceIds: ['00000000-0000-4000-8000-000000000001'],
+        limit: 1,
+      }, false)
+      expect(query).toContain('argMax(blob9, timestamp) AS install_source')
+      expect(devices).toHaveLength(1)
+      expect(devices[0].install_source).toBe(installSource || null)
+    })
+  }
 })
 
 describe('countDevicesCF', () => {

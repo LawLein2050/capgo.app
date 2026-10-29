@@ -1405,7 +1405,7 @@ export function buildReadDevicesCFQuery(params: ReadDevicesParams, customIdMode:
 
   const devicesOrder = getReadDevicesCFOrder(params)
   const outerConditions = buildReadDevicesCFOuterConditions(params, devicesOrder, customIdMode)
-  const includeCountryCode = !!params.deviceIds?.length
+  const includeDeviceMetadata = !!params.deviceIds?.length
   const outerFilter = outerConditions.length ? `WHERE ${outerConditions.join(' AND ')}` : ''
   let orderBy = 'device_id ASC'
   if (devicesOrder) {
@@ -1425,7 +1425,10 @@ export function buildReadDevicesCFQuery(params: ReadDevicesParams, customIdMode:
     '    argMax(blob6, timestamp) AS version_build,',
     '    argMax(blob7, timestamp) AS default_channel,',
     '    argMax(blob8, timestamp) AS key_id,',
-    ...(includeCountryCode ? ['    argMax(blob10, if(blob10 != \'\', timestamp, toDateTime(\'1970-01-01 00:00:00\'))) AS country_code,'] : []),
+    ...(includeDeviceMetadata ? [
+      '    argMax(blob9, timestamp) AS install_source,',
+      '    argMax(blob10, if(blob10 != \'\', timestamp, toDateTime(\'1970-01-01 00:00:00\'))) AS country_code,',
+    ] : []),
     '    argMax(double1, timestamp) AS platform,',
     '    argMax(double2, timestamp) AS is_prod,',
     '    argMax(double3, timestamp) AS is_emulator,',
